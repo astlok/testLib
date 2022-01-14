@@ -8,13 +8,13 @@ import (
 	"github.com/GoWebProd/multipart"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
-	"github.com/valyala/fasthttp"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
-func createTLSConnect(certFile string, keyFile string, timeout time.Duration) (*fasthttp.Client, error) {
+func createTLSConnect(certFile string, keyFile string, timeout time.Duration) (*http.Client, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "Can't load cert and key")
@@ -25,7 +25,8 @@ func createTLSConnect(certFile string, keyFile string, timeout time.Duration) (*
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	client := &fasthttp.Client{TLSConfig: tlsConfig}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	client := &http.Client{Transport: transport}
 
 	return client, nil
 }
@@ -48,14 +49,14 @@ func main() {
 
 	defer fileResp.Body.Close()
 
-	//client, err := createTLSConnect("/home/ssl/kata.pem", "/home/ssl/kata.key", 5*time.Second)
-	if err != nil {
-		panic(err)
-	}
+	client, err := createTLSConnect("/home/ssl/kata.pem", "/home/ssl/kata.key", 5*time.Second)
+	//if err != nil {
+	//	panic(err)
+	//}
 
 	writer := multipart.NewWriter()
 
-	err = writer.CreateFormFileReader("content", "very_important_file_name", fileResp.Body)
+	err = writer.CreateFormFileReader("content", "very_important_file_name", multipart.NewReader(fileResp.Body, int(fileResp.ContentLength)))
 	if err != nil {
 		panic(err)
 	}
@@ -73,24 +74,40 @@ func main() {
 
 	PostAPIPath := "https://cn.kata.im-sandbox.devmail.ru/kata/scanner/v1/sensors/06c834a7-5e6d-4d61-b8af-4ff3ff415dc0/scans"
 
-	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(PostAPIPath)
-	req.Header.SetMethod("POST")
-
 	var buf bytes.Buffer
 
 	_, err = io.Copy(&buf, writer)
 
-	req.SetBody(buf.Bytes())
+	u, err := url.Parse(PostAPIPath)
+	if err != nil {
+		panic(err)
+	}
+	//req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, PostAPIPath, nil)
+	req := &http.Request{
+		Method:     http.MethodPost,
+		URL:        u,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Body:       writer,
+		Host:       u.Host,
+	}
 
+	req.Body = writer
+	req.ContentLength = int64(writer.Len())
+	req.GetBody = func() (io.ReadCloser, error) {
+		return writer, nil
+	}
+
+	//req.Body = ioutil.NopCloser(writer)
 	req.Header.Add("Content-Type", writer.FormDataContentType())
 
-	//resp := fasthttp.AcquireResponse()
+	resp, err := client.Do(req)
 
-	//err = client.Do(req, resp)
-	//if err != nil {
-	//	panic(err)
-	//}
+	if err != nil {
+		panic(err)
+	}
 
-	fmt.Println(string(req.Body()))
+	fmt.Println(resp.StatusCode)
 }
