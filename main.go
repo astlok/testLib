@@ -1,16 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/GoWebProd/multipart"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"io"
+	"mime/multipart"
 	"net/http"
-	"net/url"
 	"time"
 )
 
@@ -47,61 +45,49 @@ func main() {
 		panic(err)
 	}
 
-	defer fileResp.Body.Close()
-
 	client, err := createTLSConnect("/home/ssl/kata.pem", "/home/ssl/kata.key", 5*time.Second)
 	//if err != nil {
 	//	panic(err)
 	//}
 
-	writer := multipart.NewWriter()
-
-	err = writer.CreateFormFileReader("content", "very_important_file_name", multipart.NewReader(fileResp.Body, int(fileResp.ContentLength)))
-	if err != nil {
-		panic(err)
-	}
-
-	scanID, _ := uuid.NewUUID()
-	err = writer.CreateFormField("scanId", []byte(scanID.String()))
-	if err != nil {
-		panic(err)
-	}
-
-	err = writer.CreateFormField("objectType", []byte("file"))
-	if err != nil {
-		panic(err)
-	}
+	body, writer := io.Pipe()
 
 	PostAPIPath := "https://cn.kata.im-sandbox.devmail.ru/kata/scanner/v1/sensors/06c834a7-5e6d-4d61-b8af-4ff3ff415dc0/scans"
 
-	var buf bytes.Buffer
+	mwriter := multipart.NewWriter(writer)
 
-	_, err = io.Copy(&buf, writer)
+	go func() {
+		part, err := mwriter.CreateFormFile("content", "very_important_file_name")
+		if err != nil {
+			panic(err)
+		}
 
-	u, err := url.Parse(PostAPIPath)
-	if err != nil {
-		panic(err)
-	}
-	//req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, PostAPIPath, nil)
-	req := &http.Request{
-		Method:     http.MethodPost,
-		URL:        u,
-		Proto:      "HTTP/1.1",
-		ProtoMajor: 1,
-		ProtoMinor: 1,
-		Header:     make(http.Header),
-		Body:       writer,
-		Host:       u.Host,
-	}
+		_, err = io.Copy(part, fileResp.Body)
 
-	req.Body = writer
-	req.ContentLength = int64(writer.Len())
-	req.GetBody = func() (io.ReadCloser, error) {
-		return writer, nil
-	}
+		//defer fileResp.Body.Close()
 
-	//req.Body = ioutil.NopCloser(writer)
-	req.Header.Add("Content-Type", writer.FormDataContentType())
+		scanID, _ := uuid.NewUUID()
+		err = mwriter.WriteField("scanId", scanID.String())
+		if err != nil {
+			panic(err)
+		}
+
+		err = mwriter.WriteField("objectType", "file")
+		if err != nil {
+			panic(err)
+		}
+
+		if err = mwriter.Close(); err != nil {
+			panic(err)
+		}
+		writer.Close()
+	}()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, PostAPIPath, body)
+
+	req.ContentLength = 601
+
+	req.Header.Add("Content-Type", mwriter.FormDataContentType())
 
 	resp, err := client.Do(req)
 
